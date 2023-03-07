@@ -321,7 +321,7 @@ static int polite_set_time() {
             return -1;
         }
 
-        LOG_INFO("Time is adjusting politely.  delta=%" USEC_FMT " usec  old=%" USEC_FMT " usec", delta, old.tv_sec);
+        LOG_INFO("Time is adjusting politely.  delta=%" USEC_FMT " usec  old=%" USEC_FMT " usec", delta, tv_to_epoch_usec(&old));
     }
 
     return 0;
