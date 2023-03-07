@@ -20,6 +20,9 @@
 #include <stdbool.h>
 #include <limits.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <inttypes.h>
+
 
 #define PROGRAM_NAME "polite-hwclock-hctosys"
 
@@ -29,6 +32,8 @@
 #define LOG_INFO(fmt__, ...) LOG("INFO   ", fmt__, __VA_ARGS__)
 #define LOG_VERBOSE(fmt__, ...) (global_is_verbose ? LOG("VERBOSE", fmt__, __VA_ARGS__) : 0)
 #define LOG_VERBOSE_NARG(fmt__) (global_is_verbose ? LOG_VERBOSE(fmt__ "%s", "") : 0)
+
+#define USEC_FMT PRId64
 
 #define MAX_POLITE_ADJUSTMENT_DELTA_SEC (5 * 60)
 
@@ -50,6 +55,13 @@ const char *get_log_time() {
     return global_log_buf;
 }
 
+static int64_t sec_to_usec(int64_t sec) {
+    return sec * 1000 * 1000;
+}
+
+static int64_t usec_to_sec(int64_t usec) {
+    return (usec / 1000) / 1000;
+}
 
 static int open_ro(const char *name) {
     assert(name);
@@ -78,23 +90,36 @@ static void rtc_time_to_tm(const struct rtc_time *rtc, struct tm *tm) {
     tm->tm_yday = rtc->tm_yday;
 }
 
-static int tm_to_epoch(struct tm *tm, time_t *epoch) {
+static int tm_to_epoch_usec(struct tm *tm, int64_t *epoch_usec) {
     assert(tm);
-    assert(epoch);
+    assert(epoch_usec);
 
-    time_t tmp_epoch;
+    time_t epoch_sec;
 
     /* Assume hardware clock is in UTC. */
-    tmp_epoch = timegm(tm);
-    if (-1 == tmp_epoch) {
+    epoch_sec = timegm(tm);
+    if (-1 == epoch_sec) {
         LOG_ERROR("timegm(tm) failed.  tm=%04d-%02d-%02d %02d:%02d:%02d  gmtoff=%ld isdst=%d wday=%d yday=%d zone=%s", 
                 tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec, (long)tm->tm_gmtoff, 
                 tm->tm_isdst, tm->tm_wday, tm->tm_yday, tm->tm_zone);
         return -1;
     }
 
-    *epoch = tmp_epoch;
+    *epoch_usec = sec_to_usec(epoch_sec);
     return 0;
+}
+
+static int64_t tv_to_epoch_usec(const struct timeval *tv) {
+    assert(tv);
+    int64_t epoch_usec = sec_to_usec(tv->tv_sec);
+    epoch_usec += tv->tv_usec;
+    return epoch_usec;
+}
+
+static void epoch_usec_to_tv(const int64_t epoch_usec, struct timeval *tv) {
+    assert(tv);
+    tv->tv_sec = usec_to_sec(epoch_usec);
+    tv->tv_usec = epoch_usec - sec_to_usec(tv->tv_sec);
 }
 
 
@@ -131,10 +156,10 @@ static int read_rtc(struct rtc_time *time) {
     return 0;
 }
 
-static int read_rtc_as_epoch(time_t *epoch) {
+static int read_rtc_as_epoch_usec(int64_t *epoch_usec) {
     LOG_VERBOSE_NARG("read_rtc_as_epoch");
 
-    assert(epoch);
+    assert(epoch_usec);
 
     struct rtc_time rtct;
     if (read_rtc(&rtct) != 0) {
@@ -143,15 +168,15 @@ static int read_rtc_as_epoch(time_t *epoch) {
 
     struct tm tm;
     rtc_time_to_tm(&rtct, &tm);
-    if (tm_to_epoch(&tm, epoch) != 0) {
+    if (tm_to_epoch_usec(&tm, epoch_usec) != 0) {
         return -1;
     }
 
     return 0;
 }
 
-/* The hardware clock has a granularity of 1 second so we need to wait for the second to tick over before trying to do anything, so 
-   we can be as accurate as possible. */
+/* The hardware clock has a granularity of 1 second so we need to wait for the second to tick over before trying to do 
+   anything, so we can be as accurate as possible. */
 static int wait_for_rtc_tick() {
     LOG_VERBOSE_NARG("wait_for_rtc_tick");
 
@@ -188,17 +213,19 @@ static int wait_for_rtc_tick() {
     return (rc > 0) ? 0 : -1;
 }
 
-static int get_hardware_now(time_t *epoch) {
+static int get_hardware_now(int64_t *epoch_usec) {
     LOG_VERBOSE_NARG("get_hardware_now");
 
-    if ((wait_for_rtc_tick() != 0) || (read_rtc_as_epoch(epoch) != 0)) {
+    assert(epoch_usec);
+
+    if ((wait_for_rtc_tick() != 0) || (read_rtc_as_epoch_usec(epoch_usec) != 0)) {
         return -1;
     }
 
     return 0;
 }
  
-static int get_system_now(time_t *epoch) {
+static int get_system_now(int64_t *epoch_usec) {
     LOG_VERBOSE_NARG("get_system_now");
 
     struct timeval tv;
@@ -207,11 +234,11 @@ static int get_system_now(time_t *epoch) {
         return -1;
     }
 
-    *epoch = tv.tv_sec;
+    *epoch_usec = tv_to_epoch_usec(&tv);
     return 0;
 }
  
-static int get_times(time_t *hw, time_t *sys) {
+static int get_times(int64_t *hw, int64_t *sys) {
     LOG_VERBOSE_NARG("get_times");
 
     assert(hw);
@@ -220,8 +247,8 @@ static int get_times(time_t *hw, time_t *sys) {
     /* This funciton is extremely time-sensitive.  We need to get the system time ASAP after getting the hardware time.
        Don't be tempted to get the system time first because we need to wait for the hardware clock to tick. */
 
-    time_t tmp_hw = -1;
-    time_t tmp_sys = -1;
+    int64_t tmp_hw = -1;
+    int64_t tmp_sys = -1;
 
     if (get_hardware_now(&tmp_hw) != 0) {
         return -1;
@@ -231,22 +258,22 @@ static int get_times(time_t *hw, time_t *sys) {
         return -1;
     }
 
-    LOG_VERBOSE("get_times: hw=%lld sys=%lld", ((long long)tmp_hw), ((long long)tmp_sys));
+    LOG_VERBOSE("get_times: hw=%" USEC_FMT " sys=%" USEC_FMT, tmp_hw, tmp_sys);
 
     *hw = tmp_hw;
     *sys = tmp_sys;
     return 0;
 }
 
-static time_t calculate_delta(size_t hw_time, size_t sys_time) {
+static int64_t calculate_delta(int64_t hw_time, int64_t sys_time) {
     return hw_time - sys_time;
 }
 
-static int get_delta(time_t *delta) {
+static int get_delta(int64_t *delta) {
     assert(delta);
 
-    time_t hw_now;
-    time_t sys_now;
+    int64_t hw_now;
+    int64_t sys_now;
 
     if (get_times(&hw_now, &sys_now) != 0) {
         return -1;
@@ -257,7 +284,9 @@ static int get_delta(time_t *delta) {
 }
 
 
-static int get_current_time_adjustment_delta(time_t *current_delta) {
+static int get_current_time_adjustment_delta(int64_t *current_delta) {
+    LOG_VERBOSE_NARG("get_current_time_adjustment_delta");
+
     assert(current_delta);
     /* There's an old bug where adjtime(NULL &old) would not set old.  We're super-unlikely to encounter it because 
        it's back in Linux 2.6 so old but just in case we'll set old to a big value. */
@@ -267,6 +296,8 @@ static int get_current_time_adjustment_delta(time_t *current_delta) {
         return -1;
     }
 
+    *current_delta = tv_to_epoch_usec(&old);
+    LOG_VERBOSE("current_adjtime_delta=%" USEC_FMT, *current_delta);
     return 0;
 }
 
@@ -274,7 +305,7 @@ static int get_current_time_adjustment_delta(time_t *current_delta) {
 static int polite_set_time() {
     LOG_VERBOSE_NARG("polite_set_time");
 
-    time_t delta;
+    int64_t delta;
     if (get_delta(&delta) != 0) {
         return -1;
     }
@@ -284,48 +315,47 @@ static int polite_set_time() {
     } else {
         struct timeval old = { 0, 0 };
         struct timeval tv;
-        tv.tv_sec = delta;
-        tv.tv_usec = 0;        
+        epoch_usec_to_tv(delta, &tv);
         if (adjtime(&tv, &old) != 0) {
-            LOG_ERROR("Unable to adjust time politely.  delta=%lld sec", ((long long)delta));
+            LOG_ERROR("Unable to adjust time politely.  delta=%" USEC_FMT " usec", delta);
             return -1;
         }
 
-        LOG_INFO("Time is adjusting politely.  delta=%lld sec  old=%lld sec", ((long long)delta), ((long long)old.tv_sec));        
+        LOG_INFO("Time is adjusting politely.  delta=%" USEC_FMT " usec  old=%" USEC_FMT " usec", delta, old.tv_sec);
     }
 
     return 0;
 }
 
+
 static int impolite_set_time() {
     LOG_VERBOSE_NARG("impolite_set_time");
 
-    time_t hw_now;
-    time_t sys_now;
+    int64_t hw_now;
+    int64_t sys_now;
 
     if (get_times(&hw_now, &sys_now) != 0) {
         return -1;
     }
    
-    time_t delta = calculate_delta(hw_now, sys_now);
+    int64_t delta = calculate_delta(hw_now, sys_now);
     if (0 == delta) {
         LOG_VERBOSE_NARG("0 == delta");
     } else {
         struct timeval tv;
-        tv.tv_sec = hw_now;
-        tv.tv_usec = 0;
+        epoch_usec_to_tv(hw_now, &tv);
         if (settimeofday(&tv, NULL) != 0) {
-            LOG_ERROR("Unable to set time impolitely.  delta=%lld sec", ((long long)delta));
+            LOG_ERROR("Unable to set time impolitely.  delta=%" USEC_FMT " usec", delta);
             return -1;
         }
 
-        LOG_INFO("Adjusted time impolitely.  delta=%lld sec", ((long long)delta));
+        LOG_INFO("Adjusted time impolitely.  delta=%" USEC_FMT " usec", delta);
     }
 
     return 0;
 }
 
-static bool has_same_sign(time_t one, time_t two) {
+static bool has_same_sign(int64_t one, int64_t two) {
     if ((0 == one) && (0 == two)) {
         return true;
     }
@@ -341,9 +371,13 @@ static bool has_same_sign(time_t one, time_t two) {
     return false;
 }
 
+static int64_t max_polite_adjustment_delta_usec() {
+    return sec_to_usec(MAX_POLITE_ADJUSTMENT_DELTA_SEC);
+}
+
 static int set_time() {
     LOG_VERBOSE_NARG("set_time");
-    time_t delta;
+    int64_t delta;
     if (get_delta(&delta) != 0) {
         return -1;
     }
@@ -353,28 +387,33 @@ static int set_time() {
         return 0;
     }
 
-    time_t current_adjtime_delta = LONG_MAX;
+    int64_t current_adjtime_delta = INT64_MAX;
     if (get_current_time_adjustment_delta(&current_adjtime_delta) != 0) {
         return -1;
     }
 
     if (has_same_sign(delta, current_adjtime_delta)) {
-        LOG_VERBOSE("delta=%lld current_adjtime_delta=%lld, they have the same sign, will leave the situation as-is for now", ((long long)delta), ((long long)current_adjtime_delta));
+        LOG_VERBOSE("delta=%" USEC_FMT " current_adjtime_delta=%" USEC_FMT 
+                        ", they have the same sign, will leave the situation as-is for now", 
+                    delta, current_adjtime_delta);
         return 0;
     }
 
-    LOG_VERBOSE("delta=%lld max_polite_delta=%d", ((long long)delta), MAX_POLITE_ADJUSTMENT_DELTA_SEC);
+    LOG_VERBOSE("delta=%" USEC_FMT " usec max_polite_delta=%" USEC_FMT " usec", 
+            delta, max_polite_adjustment_delta_usec());
 
-    if ((delta < 0) && (llabs(delta) > MAX_POLITE_ADJUSTMENT_DELTA_SEC)) {
-        LOG_ERROR("delta=%lld and is outside the polite adjustment limit.  I will not jolt the clock backwards, reboot recommended.", ((long long)delta));
+    if ((delta < 0) && (llabs(delta) > max_polite_adjustment_delta_usec())) {
+        LOG_ERROR("delta=%" USEC_FMT 
+                    " and is outside the polite adjustment limit.  I will not step the clock backwards, reboot recommended.", 
+                delta);
         return -1;
     }
 
-    int result = (llabs(delta) <= MAX_POLITE_ADJUSTMENT_DELTA_SEC) ? polite_set_time() : impolite_set_time();
+    int result = (llabs(delta) <= max_polite_adjustment_delta_usec()) ? polite_set_time() : impolite_set_time();
     if ((0 == result) && global_is_verbose) {
         LOG_VERBOSE_NARG("set_time: success.  Will re-get times for the log");
-        time_t hw_now;
-        time_t sys_now;
+        int64_t hw_now;
+        int64_t sys_now;
         get_times(&hw_now, &sys_now);
     }
 
