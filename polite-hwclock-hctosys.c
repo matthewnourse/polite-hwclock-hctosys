@@ -41,6 +41,7 @@
 #define LOG_WRITE_ERROR_NO_ERRNO(fmt__, ...) LOG_WRITE(LOG_SEVERITY_ERROR, fmt__, __VA_ARGS__)
 #define LOG_WRITE_ERROR_NARG(fmt__) LOG_WRITE_ERROR(fmt__ "%s", "")
 #define LOG_WRITE_INFO(fmt__, ...) LOG_WRITE(LOG_SEVERITY_INFO, fmt__, __VA_ARGS__)
+#define LOG_WRITE_INFO_NARG(fmt__) LOG_WRITE_INFO(fmt__ "%s", "")
 #define LOG_WRITE_VERBOSE(fmt__, ...) (global_is_verbose ? LOG_WRITE(LOG_SEVERITY_DEBUG, fmt__, __VA_ARGS__) : 0)
 #define LOG_WRITE_VERBOSE_NARG(fmt__) (global_is_verbose ? LOG_WRITE_VERBOSE(fmt__ "%s", "") : 0)
 
@@ -595,12 +596,13 @@ static int run_system_v() {
     }
 
     openlog (PROGRAM_NAME, LOG_PID, LOG_DAEMON);
-
+    LOG_WRITE_INFO_NARG("Started as a System V daemon");
     return run_forever();
 }
 
 static int run_systemd() {
     ignore_irrelevant_signals();
+    LOG_WRITE_INFO_NARG("Started as a Systemd daemon");
     return run_forever();
 }
 
@@ -625,6 +627,7 @@ void print_usage(const char *argv[]) {
     fprintf(stderr, 
             "%s <systemv|systemd|once> [-v]\n\nLike hwclock -s, but gradually like ntpd if the time delta <= %d second(s).\n"
                 "Will take no action if the delta is less than %d second(s).\n" 
+                "Will poll for clock deltas every %d second(s).\n"
                 "Will refuse to jolt the clock backwards.\n"
                 "Assumes that hardware clock is in UTC.\n"
                 "\n"
@@ -632,7 +635,7 @@ void print_usage(const char *argv[]) {
                 "systemd: run as a Systemd daemon (ie log to stderr & don't detach).\n"
                 "once:    just check & adjust the time once.\n"
                 "-v:      verbose output.\n", 
-            argv[0], MAX_POLITE_ADJUSTMENT_DELTA_SEC, MIN_ADJUSTMENT_DELTA_SEC);
+            argv[0], MAX_POLITE_ADJUSTMENT_DELTA_SEC, MIN_ADJUSTMENT_DELTA_SEC, LOOP_POLL_SEC);
 }
 
 
