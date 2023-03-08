@@ -46,6 +46,9 @@
 #define USEC_FMT PRId64
 
 #define MAX_POLITE_ADJUSTMENT_DELTA_SEC 30
+#define LOOP_POLL_SEC 5
+
+
 
 typedef enum {
     RUN_MODE_SYSTEM_V,
@@ -249,21 +252,22 @@ static int read_rtc_as_epoch_usec(int64_t *epoch_usec) {
     return 0;
 }
 
-/* The hardware clock has a granularity of 1 second so we need to wait for the second to tick over before trying to do 
-   anything, so we can be as accurate as possible. */
-static int wait_for_rtc_tick() {
-    LOG_WRITE_VERBOSE_NARG("wait_for_rtc_tick");
-
-    int fd = open_rtc();
-    if (fd < 0) {
-        return -1;
-    }
-
+static int enable_rtc_tick_interrupt(int fd) {
     if (ioctl(fd, RTC_UIE_ON, 0) == -1) {
         LOG_WRITE_ERROR("Unable to turn on clock tick interrupts via ioctl(%s)", "RTC_UIE_ON");
         return -1;
     }
 
+    return 0;
+}
+
+static void disable_rtc_tick_interrupt(int fd) {
+    if (ioctl(fd, RTC_UIE_OFF, 0) == -1) {
+        LOG_WRITE_ERROR("Unable to turn off clock tick interrupts via ioctl(%s)", "RTC_UIE_OFF");
+    }
+}
+
+static int select_on_rtc(int fd) {
     fd_set rtc_fds;
     FD_ZERO(&rtc_fds);
     FD_SET(fd, &rtc_fds);
@@ -276,15 +280,50 @@ static int wait_for_rtc_tick() {
     
     if (0 == rc) {
         LOG_WRITE_ERROR("Waiting for clock tick interrupt timed out.  timeout=%lld seconds", ((long long)timeout_sec));
-    } else if (rc < 0) {
+        return -1;
+    } 
+    
+    if (rc < 0) {
         LOG_WRITE_ERROR("Waiting for clock tick interrupt failed.  timeout=%lld seconds", ((long long)timeout_sec));
+        return -1;
+    } 
+
+    return 0;
+}
+
+static int read_interrupt_info_from_rtc(int fd) {
+    unsigned long interrupt_info;
+    if (read(fd, &interrupt_info, sizeof(interrupt_info)) != sizeof(interrupt_info)) {
+        LOG_WRITE_ERROR_NARG("read() on RTC failed");
+        return -1;
+    } 
+
+    /* Least significant byte contains the interrupt that fired. */
+    uint8_t interrupt = (uint8_t)interrupt_info;
+    LOG_WRITE_VERBOSE("read() on RTC returned interrupt bitmask=0x%02x", (unsigned int)interrupt);
+    return 0;
+}
+    
+
+/* The hardware clock has a granularity of 1 second so we need to wait for the second to tick over before trying to do 
+   anything, so we can be as accurate as possible. */
+static int wait_for_rtc_tick() {
+    LOG_WRITE_VERBOSE_NARG("wait_for_rtc_tick");
+
+    int fd = open_rtc();
+    if (fd < 0) {
+        return -1;
     }
 
-    if (ioctl(fd, RTC_UIE_OFF, 0) == -1) {
-        LOG_WRITE_ERROR("Unable to turn off clock tick interrupts via ioctl(%s)", "RTC_UIE_OFF");
+    if (enable_rtc_tick_interrupt(fd) != 0) {
+        return -1;
     }
-    
-    return (rc > 0) ? 0 : -1;
+
+    /* We need to read() from the RTC fd after select()ing to reset it so the select() will wait next time. */
+    bool success = ((select_on_rtc(fd) == 0) && (read_interrupt_info_from_rtc(fd) == 0));
+    disable_rtc_tick_interrupt(fd);
+   
+    return success ? 0 : -1;
 }
 
 static int get_hardware_now(int64_t *epoch_usec) {
@@ -506,7 +545,8 @@ static void ignore_irrelevant_signals() {
 static int run_forever() {
     int result;
     while (0 == (result = set_time())) {
-        result = set_time();
+        LOG_WRITE_VERBOSE("Sleeping for %d seconds", LOOP_POLL_SEC);
+        sleep(LOOP_POLL_SEC);
     }
 
     return result;
