@@ -46,6 +46,7 @@
 
 #define USEC_FMT PRId64
 
+#define MIN_ADJUSTMENT_DELTA_SEC 1
 #define MAX_POLITE_ADJUSTMENT_DELTA_SEC 30
 #define LOOP_POLL_SEC 5
 
@@ -496,8 +497,9 @@ static int set_time() {
         return -1;
     }
 
-    if (0 == delta) {
-        LOG_WRITE_VERBOSE_NARG("No work to do, there is no delta");
+    if (llabs(delta) < sec_to_usec(MIN_ADJUSTMENT_DELTA_SEC)) {
+        LOG_WRITE_VERBOSE("No work to do, delta=%" USEC_FMT " which is less than threshold=%" USEC_FMT, 
+                delta, sec_to_usec(MIN_ADJUSTMENT_DELTA_SEC));
         return 0;
     }
 
@@ -621,7 +623,8 @@ static int run() {
 
 void print_usage(const char *argv[]) {
     fprintf(stderr, 
-            "%s <systemv|systemd|once> [-v]\n\nLike hwclock -s, but gradually like ntpd if the time delta <= %d seconds.\n"        
+            "%s <systemv|systemd|once> [-v]\n\nLike hwclock -s, but gradually like ntpd if the time delta <= %d second(s).\n"
+                "Will take no action if the delta is less than %d second(s).\n" 
                 "Will refuse to jolt the clock backwards.\n"
                 "Assumes that hardware clock is in UTC.\n"
                 "\n"
@@ -629,7 +632,7 @@ void print_usage(const char *argv[]) {
                 "systemd: run as a Systemd daemon (ie log to stderr & don't detach).\n"
                 "once:    just check & adjust the time once.\n"
                 "-v:      verbose output.\n", 
-            argv[0], MAX_POLITE_ADJUSTMENT_DELTA_SEC);
+            argv[0], MAX_POLITE_ADJUSTMENT_DELTA_SEC, MIN_ADJUSTMENT_DELTA_SEC);
 }
 
 
