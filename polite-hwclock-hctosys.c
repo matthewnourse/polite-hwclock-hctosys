@@ -415,13 +415,8 @@ static int get_current_time_adjustment_delta(int64_t *current_delta) {
 }
 
 
-static int polite_set_time() {
-    LOG_WRITE_VERBOSE_NARG("polite_set_time");
-
-    int64_t delta;
-    if (get_delta(&delta) != 0) {
-        return -1;
-    }
+static int polite_set_time(int64_t delta) {
+    LOG_WRITE_VERBOSE("polite_set_time, delta=%" USEC_FMT, delta);
 
     if (0 == delta) {
         LOG_WRITE_VERBOSE_NARG("0 == delta");
@@ -441,7 +436,6 @@ static int polite_set_time() {
     return 0;
 }
 
-
 static int impolite_set_time() {
     LOG_WRITE_VERBOSE_NARG("impolite_set_time");
 
@@ -455,17 +449,22 @@ static int impolite_set_time() {
     int64_t delta = calculate_delta(hw_now, sys_now);
     if (0 == delta) {
         LOG_WRITE_VERBOSE_NARG("0 == delta");
-    } else {
-        struct timeval tv;
-        epoch_usec_to_tv(hw_now, &tv);
-        if (settimeofday(&tv, NULL) != 0) {
-            LOG_WRITE_ERROR("Unable to set time impolitely.  delta=%" USEC_FMT " usec", delta);
-            return -1;
-        }
+        return 0;
+    }
+    
+    if (delta < 0) {
+        LOG_WRITE_ERROR("delta=%" USEC_FMT " usec, will not step the clock backwards.  Reboot recommended.", delta);
+        return -1;
+    } 
 
-        LOG_WRITE_INFO("Adjusted time impolitely.  delta=%" USEC_FMT " usec", delta);
+    struct timeval tv;
+    epoch_usec_to_tv(hw_now, &tv);
+    if (settimeofday(&tv, NULL) != 0) {
+        LOG_WRITE_ERROR("Unable to set time impolitely.  delta=%" USEC_FMT " usec", delta);
+        return -1;
     }
 
+    LOG_WRITE_INFO("Adjusted time impolitely.  delta=%" USEC_FMT " usec", delta);
     return 0;
 }
 
@@ -516,14 +515,7 @@ static int set_time() {
     LOG_WRITE_VERBOSE("delta=%" USEC_FMT " usec max_polite_delta=%" USEC_FMT " usec", 
             delta, max_polite_adjustment_delta_usec());
 
-    if ((delta < 0) && (llabs(delta) > max_polite_adjustment_delta_usec())) {
-        LOG_WRITE_ERROR("delta=%" USEC_FMT 
-                    " and is outside the polite adjustment limit.  I will not step the clock backwards, reboot recommended.", 
-                delta);
-        return -1;
-    }
-
-    int result = (llabs(delta) <= max_polite_adjustment_delta_usec()) ? polite_set_time() : impolite_set_time();
+    int result = (llabs(delta) <= max_polite_adjustment_delta_usec()) ? polite_set_time(delta) : impolite_set_time();
     if ((0 == result) && global_is_verbose) {
         LOG_WRITE_VERBOSE_NARG("set_time: success.  Will re-get times for the log");
         int64_t hw_now;
