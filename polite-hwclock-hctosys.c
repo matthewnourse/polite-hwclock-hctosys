@@ -38,6 +38,7 @@
 
 #define LOG_WRITE(sev__, fmt__, ...) LOG_WRITE_RUN_MODE_SPECIFIC(sev__, fmt__, __VA_ARGS__)
 #define LOG_WRITE_ERROR(fmt__, ...) LOG_WRITE(LOG_SEVERITY_ERROR, fmt__ "  error=%s (%d)", __VA_ARGS__, strerror(errno), errno)
+#define LOG_WRITE_ERROR_NO_ERRNO(fmt__, ...) LOG_WRITE(LOG_SEVERITY_ERROR, fmt__, __VA_ARGS__)
 #define LOG_WRITE_ERROR_NARG(fmt__) LOG_WRITE_ERROR(fmt__ "%s", "")
 #define LOG_WRITE_INFO(fmt__, ...) LOG_WRITE(LOG_SEVERITY_INFO, fmt__, __VA_ARGS__)
 #define LOG_WRITE_VERBOSE(fmt__, ...) (global_is_verbose ? LOG_WRITE(LOG_SEVERITY_DEBUG, fmt__, __VA_ARGS__) : 0)
@@ -279,7 +280,7 @@ static int select_on_rtc(int fd) {
     int rc = select(fd + 1, &rtc_fds, NULL, NULL, &tv);
     
     if (0 == rc) {
-        LOG_WRITE_ERROR("Waiting for clock tick interrupt timed out.  timeout=%lld seconds", ((long long)timeout_sec));
+        LOG_WRITE_ERROR_NO_ERRNO("Waiting for clock tick interrupt timed out.  timeout=%lld seconds", ((long long)timeout_sec));
         return -1;
     } 
     
@@ -527,7 +528,6 @@ static int set_time() {
 }
 
 static void ignore_irrelevant_signals() {
-    /* Ignore signals that don't really matter to us. */
     signal(SIGCHLD, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
 }
@@ -536,7 +536,8 @@ static void ignore_irrelevant_signals() {
 
 static int run_forever() {
     int result;
-    while (0 == (result = set_time())) {
+    while (true) {
+        set_time();
         LOG_WRITE_VERBOSE("Sleeping for %d seconds", LOOP_POLL_SEC);
         sleep(LOOP_POLL_SEC);
     }
