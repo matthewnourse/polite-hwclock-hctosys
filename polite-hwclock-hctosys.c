@@ -48,8 +48,8 @@
 #define USEC_FMT PRId64
 
 #define MIN_ADJUSTMENT_DELTA_SEC 1
-#define MAX_POLITE_ADJUSTMENT_DELTA_SEC 30
-#define LOOP_POLL_SEC 5
+#define MAX_POLITE_ADJUSTMENT_DELTA_SEC 5
+#define LOOP_POLL_SEC 1
 
 
 
@@ -509,9 +509,9 @@ static int set_time() {
         return -1;
     }
 
-    if (has_same_sign(delta, current_adjtime_delta)) {
+    if (has_same_sign(delta, current_adjtime_delta) && (llabs(delta) <= max_polite_adjustment_delta_usec())) {
         LOG_WRITE_VERBOSE("delta=%" USEC_FMT " current_adjtime_delta=%" USEC_FMT
-                        ", they have the same sign, will leave the situation as-is for now", 
+                        ", they have the same sign & delta is within the polite adjustment limit, no action required", 
                     delta, current_adjtime_delta);
         return 0;
     }
