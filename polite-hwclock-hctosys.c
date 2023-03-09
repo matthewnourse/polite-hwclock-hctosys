@@ -270,6 +270,7 @@ static void disable_rtc_tick_interrupt(int fd) {
     }
 }
 
+/* Returns zero on success, positive on timeout, negative on other error. */
 static int select_on_rtc(int fd) {
     fd_set rtc_fds;
     FD_ZERO(&rtc_fds);
@@ -283,7 +284,7 @@ static int select_on_rtc(int fd) {
     
     if (0 == rc) {
         LOG_WRITE_ERROR_NO_ERRNO("Waiting for clock tick interrupt timed out.  timeout=%lld seconds", ((long long)timeout_sec));
-        return -1;
+        return 1;
     } 
     
     if (rc < 0) {
@@ -309,7 +310,7 @@ static int read_interrupt_info_from_rtc(int fd) {
     
 
 /* The hardware clock has a granularity of 1 second so we need to wait for the second to tick over before trying to do 
-   anything, so we can be as accurate as possible. */
+   anything, so we can be as accurate as possible.  Returns 0 on success, >0 on timeout, <0 on other error. */
 static int wait_for_rtc_tick() {
     LOG_WRITE_VERBOSE_NARG("wait_for_rtc_tick");
 
@@ -322,23 +323,38 @@ static int wait_for_rtc_tick() {
         return -1;
     }
 
-    /* We need to read() from the RTC fd after select()ing to reset it so the select() will wait next time. */
-    bool success = ((select_on_rtc(fd) == 0) && (read_interrupt_info_from_rtc(fd) == 0));
+    int rc = select_on_rtc(fd);
+    if (0 == rc) {
+        /* We need to read() from the RTC fd after select()ing to reset it so the select() will wait next time. */
+        rc = read_interrupt_info_from_rtc(fd);
+    }
+
     disable_rtc_tick_interrupt(fd);
    
-    return success ? 0 : -1;
+    return rc;
 }
 
+/* Returns 0 on success, >0 if we timed out waiting for the RTC but still read the time, <0 on other error. */
 static int get_hardware_now(int64_t *epoch_usec) {
     LOG_WRITE_VERBOSE_NARG("get_hardware_now");
 
     assert(epoch_usec);
 
-    if ((wait_for_rtc_tick() != 0) || (read_rtc_as_epoch_usec(epoch_usec) != 0)) {
+    int wait_rc = wait_for_rtc_tick();
+    if (wait_rc < 0) {
         return -1;
     }
 
-    return 0;
+    if (wait_rc > 0) {
+        LOG_WRITE_INFO_NARG("Waiting for RTC timed out but we will read the clock now anyway in case a big correction is required quickly");
+    }
+
+    int read_rc = read_rtc_as_epoch_usec(epoch_usec);
+    if (read_rc != 0) {
+        return -1;
+    }
+
+    return wait_rc;
 }
  
 static int get_system_now(int64_t *epoch_usec) {
@@ -354,19 +370,21 @@ static int get_system_now(int64_t *epoch_usec) {
     return 0;
 }
  
+/* Returns 0 on success, >0 if we timed out waiting for the RTC but still read the times, <0 on other error. */
 static int get_times(int64_t *hw, int64_t *sys) {
     LOG_WRITE_VERBOSE_NARG("get_times");
 
     assert(hw);
     assert(sys);
 
-    /* This funciton is extremely time-sensitive.  We need to get the system time ASAP after getting the hardware time.
+    /* This function is extremely time-sensitive.  We need to get the system time ASAP after getting the hardware time.
        Don't be tempted to get the system time first because we need to wait for the hardware clock to tick. */
 
     int64_t tmp_hw = -1;
     int64_t tmp_sys = -1;
 
-    if (get_hardware_now(&tmp_hw) != 0) {
+    int hw_rc = get_hardware_now(&tmp_hw);
+    if (hw_rc < 0) {
         return -1;
     }
 
@@ -374,29 +392,31 @@ static int get_times(int64_t *hw, int64_t *sys) {
         return -1;
     }
 
-    LOG_WRITE_VERBOSE("get_times: hw=%" USEC_FMT " sys=%" USEC_FMT, tmp_hw, tmp_sys);
+    LOG_WRITE_VERBOSE("get_times: hw=%" USEC_FMT " sys=%" USEC_FMT " hw_rc=%d", tmp_hw, tmp_sys, hw_rc);
 
     *hw = tmp_hw;
     *sys = tmp_sys;
-    return 0;
+    return hw_rc;
 }
 
 static int64_t calculate_delta(int64_t hw_time, int64_t sys_time) {
     return hw_time - sys_time;
 }
 
+/* Returns 0 on success, >0 if we timed out waiting for the RTC but still read the times, <0 on other error. */
 static int get_delta(int64_t *delta) {
     assert(delta);
 
     int64_t hw_now;
     int64_t sys_now;
 
-    if (get_times(&hw_now, &sys_now) != 0) {
+    int rc = get_times(&hw_now, &sys_now);
+    if (rc < 0) {
         return -1;
     }
 
     *delta = calculate_delta(hw_now, sys_now);
-    return 0;
+    return rc;
 }
 
 
@@ -439,29 +459,24 @@ static int polite_set_time(int64_t delta) {
     return 0;
 }
 
-static int impolite_set_time() {
+static int impolite_set_time(int64_t delta) {
     LOG_WRITE_VERBOSE_NARG("impolite_set_time");
 
-    int64_t hw_now;
     int64_t sys_now;
 
-    if (get_times(&hw_now, &sys_now) != 0) {
-        return -1;
-    }
-   
-    int64_t delta = calculate_delta(hw_now, sys_now);
-    if (0 == delta) {
-        LOG_WRITE_VERBOSE_NARG("0 == delta");
-        return 0;
-    }
-    
     if (delta < 0) {
         LOG_WRITE_ERROR("delta=%" USEC_FMT " usec, will not step the clock backwards.  Reboot recommended.", delta);
         return -1;
     } 
 
+   if (get_system_now(&sys_now) < 0) {
+        return -1;
+    }
+
+    int64_t target_now = sys_now + delta;
+
     struct timeval tv;
-    epoch_usec_to_tv(hw_now, &tv);
+    epoch_usec_to_tv(target_now, &tv);
     if (settimeofday(&tv, NULL) != 0) {
         LOG_WRITE_ERROR("Unable to set time impolitely.  delta=%" USEC_FMT " usec", delta);
         return -1;
@@ -493,14 +508,16 @@ static int64_t max_polite_adjustment_delta_usec() {
 
 static int set_time() {
     LOG_WRITE_VERBOSE_NARG("set_time");
+
     int64_t delta;
-    if (get_delta(&delta) != 0) {
+    int delta_rc = get_delta(&delta);
+    if (delta_rc < 0) {
         return -1;
     }
 
     if (llabs(delta) < sec_to_usec(MIN_ADJUSTMENT_DELTA_SEC)) {
-        LOG_WRITE_VERBOSE("No work to do, delta=%" USEC_FMT " which is less than threshold=%" USEC_FMT, 
-                delta, sec_to_usec(MIN_ADJUSTMENT_DELTA_SEC));
+        LOG_WRITE_VERBOSE("No work to do, delta=%" USEC_FMT " which is less than threshold=%" USEC_FMT " delta_rc=%d", 
+                delta, sec_to_usec(MIN_ADJUSTMENT_DELTA_SEC), delta_rc);
         return 0;
     }
 
@@ -510,16 +527,16 @@ static int set_time() {
     }
 
     if (has_same_sign(delta, current_adjtime_delta) && (llabs(delta) <= max_polite_adjustment_delta_usec())) {
-        LOG_WRITE_VERBOSE("delta=%" USEC_FMT " current_adjtime_delta=%" USEC_FMT
+        LOG_WRITE_VERBOSE("delta_rc=%d delta=%" USEC_FMT " current_adjtime_delta=%" USEC_FMT
                         ", they have the same sign & delta is within the polite adjustment limit, no action required", 
-                    delta, current_adjtime_delta);
+                    delta_rc, delta, current_adjtime_delta);
         return 0;
     }
 
-    LOG_WRITE_VERBOSE("delta=%" USEC_FMT " usec max_polite_delta=%" USEC_FMT " usec", 
-            delta, max_polite_adjustment_delta_usec());
+    LOG_WRITE_VERBOSE("delta_rc=%d delta=%" USEC_FMT " usec max_polite_delta=%" USEC_FMT " usec", 
+            delta_rc, delta, max_polite_adjustment_delta_usec());
 
-    int result = (llabs(delta) <= max_polite_adjustment_delta_usec()) ? polite_set_time(delta) : impolite_set_time();
+    int result = (llabs(delta) <= max_polite_adjustment_delta_usec()) ? polite_set_time(delta) : impolite_set_time(delta);
     if ((0 == result) && global_is_verbose) {
         LOG_WRITE_VERBOSE_NARG("set_time: success.  Will re-get times for the log");
         int64_t hw_now;
