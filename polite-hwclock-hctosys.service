@@ -1,0 +1,12 @@
+[Unit]
+Description=Politely set the system clock from the hardware clock
+After=network.target auditd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/polite-hwclock-hctosys systemd
+Restart=on-failure
+RestartPreventExitStatus=255
+
+[Install]
+WantedBy=multi-user.target

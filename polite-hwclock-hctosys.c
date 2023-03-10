@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  * 
  */
-/* This code is heavily based on techniques and ideas from hwclock: https://www.kernel.org/pub/linux/utils/util-linux/ */
+/* This code is based on techniques and ideas from hwclock: https://www.kernel.org/pub/linux/utils/util-linux/ */
 #define _DEFAULT_SOURCE
 
 #include <linux/rtc.h>
@@ -32,7 +32,7 @@
 #define PROGRAM_NAME "polite-hwclock-hctosys"
 
 #define LOG_WRITE_SYSTEM_V(sev__, fmt__, ...) syslog(severity_to_system_v_severity(sev__), fmt__, __VA_ARGS__)
-#define LOG_WRITE_SYSTEMD(sev__, fmt__, ...) fprintf(stderr, "%s" PROGRAM_NAME ": " fmt__ "\n", severity_to_systemd_severity(sev__), __VA_ARGS__)
+#define LOG_WRITE_SYSTEMD(sev__, fmt__, ...) fprintf(stderr, "%s" fmt__ "\n", severity_to_systemd_severity(sev__), __VA_ARGS__)
 #define LOG_WRITE_STANDALONE(sev__, fmt__, ...) fprintf(stderr, "%s %s" fmt__ "\n", get_log_time(), severity_to_human_readable_severity(sev__), __VA_ARGS__)
 #define LOG_WRITE_RUN_MODE_SPECIFIC(sev__, fmt__, ...) ((RUN_MODE_SYSTEM_V == global_run_mode) ? LOG_WRITE_SYSTEM_V(sev__, fmt__, __VA_ARGS__) : ((RUN_MODE_SYSTEMD == global_run_mode) ? LOG_WRITE_SYSTEMD(sev__, fmt__, __VA_ARGS__) : LOG_WRITE_STANDALONE(sev__, fmt__, __VA_ARGS__)))
 
@@ -176,7 +176,7 @@ static int tm_to_epoch_usec(struct tm *tm, int64_t *epoch_usec) {
 
     time_t epoch_sec;
 
-    /* Assume hardware clock is in UTC. */
+    /* Assume tm is in UTC. */
     epoch_sec = timegm(tm);
     if (-1 == epoch_sec) {
         LOG_WRITE_ERROR("timegm(tm) failed.  tm=%04d-%02d-%02d %02d:%02d:%02d  gmtoff=%ld isdst=%d wday=%d yday=%d zone=%s", 
@@ -283,7 +283,10 @@ static int select_on_rtc(int fd) {
     int rc = select(fd + 1, &rtc_fds, NULL, NULL, &tv);
     
     if (0 == rc) {
-        LOG_WRITE_ERROR_NO_ERRNO("Waiting for clock tick interrupt timed out.  timeout=%lld seconds", ((long long)timeout_sec));
+        /* Really this should be an ERROR log but this happens once every few minutes on my WSL2 system.  Far from 
+           ideal but as we take no action for small deltas it should be ok to just plough on. */
+        LOG_WRITE_VERBOSE("Waiting for clock tick interrupt timed out.  timeout=%lld seconds", 
+                ((long long)timeout_sec));
         return 1;
     } 
     
@@ -346,7 +349,10 @@ static int get_hardware_now(int64_t *epoch_usec) {
     }
 
     if (wait_rc > 0) {
-        LOG_WRITE_INFO_NARG("Waiting for RTC timed out but we will read the clock now anyway in case a big correction is required quickly");
+        /* This should really be an INFO but it happens a lot on my WSL2 system and we don't react to small deltas. 
+           We need to read the clock anyway because a big change might be required- this happens more often after
+           waking from some kind of suspend. */
+        LOG_WRITE_VERBOSE_NARG("Waiting for RTC timed out but we will read the clock now anyway");
     }
 
     int read_rc = read_rtc_as_epoch_usec(epoch_usec);
