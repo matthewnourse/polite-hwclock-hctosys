@@ -46,7 +46,7 @@
 #define LOG_WRITE_VERBOSE_NARG(fmt__) (global_is_verbose ? LOG_WRITE_VERBOSE(fmt__ "%s", "") : 0)
 
 #define USEC_FMT PRId64
-
+#define PID_FILE_NAME "/var/run/" PROGRAM_NAME ".pid"
 #define MIN_ADJUSTMENT_DELTA_SEC 1
 #define MAX_POLITE_ADJUSTMENT_DELTA_SEC 5
 #define LOOP_POLL_SEC 1
@@ -71,6 +71,8 @@ int global_rtc_fd = -1;
 bool global_is_verbose = false;
 char global_log_buf[128] = { '\0' };
 run_mode_t global_run_mode = RUN_MODE_ONCE;
+bool global_should_exit = false;
+
 
 static int64_t sec_to_usec(int64_t sec) {
     return sec * 1000 * 1000;
@@ -282,6 +284,11 @@ static int select_on_rtc(int fd) {
     tv.tv_usec = 0;
     int rc = select(fd + 1, &rtc_fds, NULL, NULL, &tv);
     
+    if (global_should_exit) {
+        LOG_WRITE_INFO_NARG("select() interrupted by signal, will exit ASAP");
+        return -1;
+    }
+
     if (0 == rc) {
         /* Really this should be an ERROR log but this happens once every few minutes on my WSL2 system.  Far from 
            ideal but as we take no action for small deltas it should be ok to just plough on. */
@@ -553,25 +560,79 @@ static int set_time() {
     return result;
 }
 
-static void ignore_irrelevant_signals() {
-    signal(SIGCHLD, SIG_IGN);
-    signal(SIGHUP, SIG_IGN);
-}
+static void write_pid_file() {
+    FILE *fp = fopen(PID_FILE_NAME, "w");
+    if (!fp) {
+        LOG_WRITE_ERROR("Unable to open pid file %s", PID_FILE_NAME);
+        return;
+    } 
 
-
-
-static int run_forever() {
-    int result;
-    while (true) {
-        set_time();
-        LOG_WRITE_VERBOSE("Sleeping for %d seconds", LOOP_POLL_SEC);
-        sleep(LOOP_POLL_SEC);
+    if (fprintf(fp, "%u\n", getpid()) < 0) {
+        LOG_WRITE_ERROR("Unable to write to pid file %s", PID_FILE_NAME);
     }
 
-    return result;
+    fclose(fp);
 }
 
-static int run_system_v() {
+static void remove_pid_file() {
+    remove(PID_FILE_NAME);
+}
+
+static void run_forever() {
+    write_pid_file();
+
+    while (!global_should_exit) {
+        set_time();
+        if (!global_should_exit) {
+            LOG_WRITE_VERBOSE("Sleeping for %d seconds", LOOP_POLL_SEC);
+            sleep(LOOP_POLL_SEC);
+        }
+    }
+
+    remove_pid_file();
+    LOG_WRITE_INFO_NARG("Exiting");
+}
+
+static void on_signal(int sig) {
+    const char *unknown_signal = "Unknown signal!";
+    switch (sig) {
+        case SIGCHLD:
+        case SIGHUP:
+            /* Explicitly ignore these. */
+            break;
+
+        case SIGTERM:
+            global_should_exit = true;
+            break;
+
+        default:
+            /* Should not be handled here. */            
+            (void)!write(STDERR_FILENO, unknown_signal, strlen(unknown_signal));
+            global_should_exit = true;
+            break;
+    }
+}
+
+static void set_signal_handler(int sig) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_signal;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(sig, &sa, NULL) == -1) {
+        LOG_WRITE_ERROR("Unable to set signal handler %d", sig);
+        exit(EXIT_FAILURE);
+    }
+}
+
+
+static void set_signal_handlers() {
+    set_signal_handler(SIGCHLD);
+    set_signal_handler(SIGHUP);
+    set_signal_handler(SIGTERM);
+}
+
+static void run_system_v() {
     pid_t pid;
 
     pid = fork();
@@ -589,7 +650,7 @@ static int run_system_v() {
         exit(EXIT_FAILURE);
     }
 
-    ignore_irrelevant_signals();
+    set_signal_handlers();
 
     /* Fork off for the second time*/
     pid = fork();
@@ -603,8 +664,7 @@ static int run_system_v() {
     }
 
     /* child (ie grandchild) */
-    /* We don't need to create any files. */
-    umask(0);
+    umask(S_IWGRP | S_IWOTH);
 
     /* Change the working directory to the root directory to avoid holding a lock on the original working directory. */
     if (chdir("/") != 0) {
@@ -620,22 +680,24 @@ static int run_system_v() {
 
     openlog (PROGRAM_NAME, LOG_PID, LOG_DAEMON);
     LOG_WRITE_INFO_NARG("Started as a System V daemon");
-    return run_forever();
+    run_forever();
 }
 
-static int run_systemd() {
-    ignore_irrelevant_signals();
+static void run_systemd() {
+    set_signal_handlers();
     LOG_WRITE_INFO_NARG("Started as a Systemd daemon");
-    return run_forever();
+    run_forever();
 }
 
 static int run() {
     switch (global_run_mode) {
         case RUN_MODE_SYSTEM_V:
-            return run_system_v();
+            run_system_v();
+            return 0;
             
         case RUN_MODE_SYSTEMD:
-            return run_systemd();
+            run_systemd();
+            return 0;
 
         case RUN_MODE_ONCE:
             return set_time();
