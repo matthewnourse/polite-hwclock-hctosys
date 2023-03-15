@@ -561,11 +561,18 @@ static int set_time() {
 }
 
 static void write_pid_file() {
-    FILE *fp = fopen(PID_FILE_NAME, "w");
-    if (!fp) {
+    int fd = open(PID_FILE_NAME, O_CREAT|O_EXCL|O_RDWR, S_IRUSR | S_IWUSR);
+    if (fd < 0) {
         LOG_WRITE_ERROR("Unable to open pid file %s", PID_FILE_NAME);
         return;
     } 
+
+    FILE *fp = fdopen(fd, "w");
+    if (!fp) {
+        LOG_WRITE_ERROR("Unable to fdopen pid file %s", PID_FILE_NAME);
+        close(fd);
+        return;
+    }
 
     if (fprintf(fp, "%u\n", getpid()) < 0) {
         LOG_WRITE_ERROR("Unable to write to pid file %s", PID_FILE_NAME);

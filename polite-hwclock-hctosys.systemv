@@ -1,0 +1,62 @@
+#!/bin/bash 
+### BEGIN INIT INFO
+# Provides:          atd
+# Required-Start:    $syslog $time $remote_fs
+# Required-Stop:     $syslog $time $remote_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Polite hwclock sync
+# Description:       Politely set the system clock from the hardware clock
+
+PID_FILE_NAME=/var/run/polite-hwclock-hctosys.pid
+
+start() {
+    if [[ -f "$PID_FILE_NAME" ]]; then
+        echo "Already running"
+        exit 1
+    else 
+        /usr/local/bin/polite-hwclock-hctosys systemv
+    fi
+}
+
+stop() {
+    if [[ -f "$PID_FILE_NAME" ]]; then
+        pid=$(cat "$PID_FILE_NAME")
+        kill $(cat "$PID_FILE_NAME")
+    else 
+        echo "Not running"
+        exit 1
+    fi
+}
+
+status() {
+    if [[ -f "$PID_FILE_NAME" ]]; then
+        pid=$(cat "$PID_FILE_NAME")
+        echo "Running, pid is $pid" 
+    else 
+        echo "Not running"
+    fi
+}
+
+
+### main logic ###
+case "$1" in
+  start)
+        start
+        ;;
+  stop)
+        stop
+        ;;
+  status)
+        status
+        ;;
+  restart|reload|condrestart)
+        stop
+        start
+        ;;
+  *)
+        echo "Usage: $0 {start|stop|restart|reload|status}"
+        exit 1
+esac
+
+exit 0
