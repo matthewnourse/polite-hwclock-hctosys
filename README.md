@@ -11,16 +11,27 @@ You need a `gcc` or compatible that supports C17.  `clang` will probably work bu
 
 
 ## Installing
-For System V init:
-
-    sudo make install-systemv
-    sudo systemctl enable polite-hwclock-hctosys
-
 For Systemd:
 
     sudo make install-systemd
+    sudo systemctl enable polite-hwclock-hctosys
+
+
+For System V init:
+
+    sudo make install-systemv
     sudo update-rc.d polite-hwclock-hctosys defaults  # Debian, Ubuntu and friends
     sudo chkconfig polite-hwclock-hctosys on          # Red Hat, Centos etc
+
+WSL2 does not have a "normal" System V startup process so you need to explicitly tell WSL2 to start `polite-hwclock-hctosys`.  For Windows 11, create/edit `/etc/wsl.conf` with these lines:
+
+    [boot]
+    command="/etc/init.d/polite-hwclock-hctosys start"
+
+For Windows 10 you need to add the following to your `~/.bash_profile`:
+    
+    wsl.exe -u root /etc/init.d/polite-hwclock-hctosys start
+
 
 
 ## Uninstalling
