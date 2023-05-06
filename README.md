@@ -40,7 +40,7 @@ For Windows 10 you need to add the following to your `~/.bash_profile`:
 
 ## Starting
     sudo /etc/init.d/polite-hwclock-hctosys start     # System V
-    sudo service polite-hwclock-hctosys start         # Systemd
+    sudo systemctl start polite-hwclock-hctosys       # Systemd
 
 
 ## Single-shot, debugging and latest usage information
