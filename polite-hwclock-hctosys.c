@@ -42,7 +42,7 @@
 #define LOG_WRITE_ERROR_NARG(fmt__) LOG_WRITE_ERROR(fmt__ "%s", "")
 #define LOG_WRITE_INFO(fmt__, ...) LOG_WRITE(LOG_SEVERITY_INFO, fmt__, __VA_ARGS__)
 #define LOG_WRITE_INFO_NARG(fmt__) LOG_WRITE_INFO(fmt__ "%s", "")
-#define LOG_WRITE_VERBOSE(fmt__, ...) (global_is_verbose ? LOG_WRITE(LOG_SEVERITY_DEBUG, fmt__, __VA_ARGS__) : 0)
+#define LOG_WRITE_VERBOSE(fmt__, ...) (global_is_verbose ? LOG_WRITE(LOG_SEVERITY_DEBUG, "%" PRIu64 ": " fmt__, (uint64_t)clock(), __VA_ARGS__) : 0)
 #define LOG_WRITE_VERBOSE_NARG(fmt__) (global_is_verbose ? LOG_WRITE_VERBOSE(fmt__ "%s", "") : 0)
 
 #define USEC_FMT PRId64
@@ -204,6 +204,22 @@ static void epoch_usec_to_tv(const int64_t epoch_usec, struct timeval *tv) {
     tv->tv_usec = epoch_usec - sec_to_usec(tv->tv_sec);
 }
 
+static int enable_rtc_tick_interrupt(int fd) {
+    LOG_WRITE_VERBOSE_NARG("enable_rtc_tick_interrupt");
+    if (ioctl(fd, RTC_UIE_ON, 0) == -1) {
+        LOG_WRITE_ERROR("Unable to turn on clock tick interrupts via ioctl(%s)", "RTC_UIE_ON");
+        return -1;
+    }
+
+    return 0;
+}
+
+static void disable_rtc_tick_interrupt(int fd) {
+    LOG_WRITE_VERBOSE_NARG("disable_rtc_tick_interrupt");
+    if (ioctl(fd, RTC_UIE_OFF, 0) == -1) {
+        LOG_WRITE_ERROR("Unable to turn off clock tick interrupts via ioctl(%s)", "RTC_UIE_OFF");
+    }
+}
 
 static int open_rtc() {
     if (-1 != global_rtc_fd) {
@@ -211,11 +227,21 @@ static int open_rtc() {
     }
 
     global_rtc_fd = open_ro("/dev/rtc0");
+    if (global_rtc_fd < 0) {
+        return global_rtc_fd;
+    }
+
+    if (enable_rtc_tick_interrupt(global_rtc_fd) != 0) {
+        close(global_rtc_fd);
+        global_rtc_fd = -1;
+    }
+
     return global_rtc_fd;
 }
 
 static void close_rtc() {
     if (-1 != global_rtc_fd) {
+        disable_rtc_tick_interrupt(global_rtc_fd);
         close(global_rtc_fd);
         global_rtc_fd = -1;
     }
@@ -257,21 +283,6 @@ static int read_rtc_as_epoch_usec(int64_t *epoch_usec) {
     return 0;
 }
 
-static int enable_rtc_tick_interrupt(int fd) {
-    if (ioctl(fd, RTC_UIE_ON, 0) == -1) {
-        LOG_WRITE_ERROR("Unable to turn on clock tick interrupts via ioctl(%s)", "RTC_UIE_ON");
-        return -1;
-    }
-
-    return 0;
-}
-
-static void disable_rtc_tick_interrupt(int fd) {
-    if (ioctl(fd, RTC_UIE_OFF, 0) == -1) {
-        LOG_WRITE_ERROR("Unable to turn off clock tick interrupts via ioctl(%s)", "RTC_UIE_OFF");
-    }
-}
-
 /* Returns zero on success, positive on timeout, negative on other error. */
 static int select_on_rtc(int fd) {
     fd_set rtc_fds;
@@ -306,6 +317,7 @@ static int select_on_rtc(int fd) {
 }
 
 static int read_interrupt_info_from_rtc(int fd) {
+    LOG_WRITE_VERBOSE_NARG("About to read() on RTC");
     unsigned long interrupt_info;
     if (read(fd, &interrupt_info, sizeof(interrupt_info)) != sizeof(interrupt_info)) {
         LOG_WRITE_ERROR_NARG("read() on RTC failed");
@@ -324,23 +336,20 @@ static int read_interrupt_info_from_rtc(int fd) {
 static int wait_for_rtc_tick() {
     LOG_WRITE_VERBOSE_NARG("wait_for_rtc_tick");
 
+    LOG_WRITE_VERBOSE_NARG("opening RTC");
     int fd = open_rtc();
     if (fd < 0) {
         return -1;
     }
 
-    if (enable_rtc_tick_interrupt(fd) != 0) {
-        return -1;
-    }
-
+    LOG_WRITE_VERBOSE_NARG("selecting on RTC");
     int rc = select_on_rtc(fd);
     if (0 == rc) {
         /* We need to read() from the RTC fd after select()ing to reset it so the select() will wait next time. */
         rc = read_interrupt_info_from_rtc(fd);
     }
 
-    disable_rtc_tick_interrupt(fd);
-   
+    LOG_WRITE_VERBOSE_NARG("wait_for_rtc_tick end");
     return rc;
 }
 
