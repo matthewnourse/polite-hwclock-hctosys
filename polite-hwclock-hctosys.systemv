@@ -12,10 +12,11 @@ PID_FILE_NAME=/var/run/polite-hwclock-hctosys.pid
 
 start() {
     if [[ -f "$PID_FILE_NAME" ]]; then
-        echo "Already running"
+        echo "start: already running"
         exit 1
     else 
         /usr/local/bin/polite-hwclock-hctosys systemv
+        echo "start: started"
     fi
 }
 
@@ -23,9 +24,9 @@ stop() {
     if [[ -f "$PID_FILE_NAME" ]]; then
         pid=$(cat "$PID_FILE_NAME")
         kill $(cat "$PID_FILE_NAME")
+        echo "stop: stopped"
     else 
-        echo "Not running"
-        exit 1
+        echo "stop: not running"
     fi
 }
 
